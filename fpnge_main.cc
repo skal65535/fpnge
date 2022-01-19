@@ -38,7 +38,7 @@ int main(int argc, char **argv) {
     return 1;
   }
   fseek(infile, 0, SEEK_END);
-  std::vector<unsigned char> in_data(ftell(infile));
+  std::vector<uint8_t> in_data(ftell(infile));
   fseek(infile, 0, SEEK_SET);
   if (fread(in_data.data(), 1, in_data.size(), infile) != in_data.size()) {
     fprintf(stderr, "error reading from %s: %s\n", in, strerror(errno));
@@ -70,7 +70,7 @@ int main(int argc, char **argv) {
 
   size_t num_c = has_alpha ? 4 : 3;
 
-  unsigned char *png;
+  uint8_t *png = nullptr;
 
   // RGB(A) only for now.
   if (has_alpha) {
@@ -87,7 +87,7 @@ int main(int argc, char **argv) {
   }
 
   size_t encoded_size = 0;
-  unsigned char *encoded = nullptr;
+  uint8_t *encoded = nullptr;
 
   if (num_reps > 0) {
     auto start = std::chrono::high_resolution_clock::now();
@@ -109,16 +109,17 @@ int main(int argc, char **argv) {
     encoded_size =
         FPNGEEncode(1, num_c, png, width, width * num_c, height, &encoded);
   }
+  free(png);
 
   FILE *o = fopen(out, "wb");
   if (!o) {
     fprintf(stderr, "error opening %s: %s\n", out, strerror(errno));
+    free(encoded);
     return 1;
   }
   if (fwrite(encoded, 1, encoded_size, o) != encoded_size) {
     fprintf(stderr, "error writing to %s: %s\n", out, strerror(errno));
   }
   fclose(o);
-  free(png);
   free(encoded);
 }

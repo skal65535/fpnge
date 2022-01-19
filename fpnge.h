@@ -14,11 +14,12 @@
 #ifndef FPNGE_H
 #define FPNGE_H
 #include <stdlib.h>
+#include <stdint.h>
 
 // bytes_per_channel = 1/2 for 8-bit and 16-bit. num_channels: 1/2/3/4
 // (G/GA/RGB/RGBA)
 size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
-                   const unsigned char *data, size_t width, size_t row_stride,
-                   size_t height, unsigned char **output);
+                   const uint8_t *data, size_t width, size_t row_stride,
+                   size_t height, uint8_t **output);
 
 #endif

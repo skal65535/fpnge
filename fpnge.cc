@@ -20,6 +20,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+ #define USE_PREDICTOR_HEURISTIC
+
 constexpr uint8_t kNbits[286] = {
     // First 16 symbols
     2, 3, 4, 6, 7, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
@@ -85,7 +87,7 @@ struct BitWriter {
     }
   }
 
-  unsigned char *data;
+  uint8_t *data;
   size_t bytes_written = 0;
   size_t bits_in_buffer = 0;
   uint64_t buffer = 0;
@@ -139,7 +141,7 @@ void WriteHuffmanCode(uint32_t num_channels, uint32_t &dist_nbits,
   writer->Write(kCodeLengthNbits[1], kCodeLengthBits[1]);
 }
 
-constexpr unsigned kCrcTable[] = {
+constexpr uint32_t kCrcTable[] = {
     0x0,        0x77073096, 0xee0e612c, 0x990951ba, 0x76dc419,  0x706af48f,
     0xe963a535, 0x9e6495a3, 0xedb8832,  0x79dcb8a4, 0xe0d5e91e, 0x97d2d988,
     0x9b64c2b,  0x7eb17cbd, 0xe7b82d07, 0x90bf1d91, 0x1db71064, 0x6ab020f2,
@@ -184,26 +186,30 @@ constexpr unsigned kCrcTable[] = {
     0x54de5729, 0x23d967bf, 0xb3667a2e, 0xc4614ab8, 0x5d681b02, 0x2a6f2b94,
     0xb40bbe37, 0xc30c8ea1, 0x5a05df1b, 0x2d02ef8d};
 
-unsigned long update_crc(unsigned long crc, unsigned char *buf, int len) {
+__m128i Load(const void* mem) {
+  return _mm_loadu_si128((const __m128i*)mem);
+}
+
+uint32_t update_crc( uint32_t crc, uint8_t *buf, int len) {
   static const uint64_t k1k2[] = {0x1'5444'2BD4ULL, 0x1'C6E4'1596ULL};
   static const uint64_t k3k4[] = {0x1'7519'97D0ULL, 0x0'CCAA'009EULL};
   static const uint64_t k5k6[] = {0x1'63CD'6124ULL, 0x0'0000'0000ULL};
   static const uint64_t poly[] = {0x1'DB71'0641ULL, 0x1'F701'1641ULL};
 
   int n = 0;
-  unsigned long c;
+   uint32_t c;
 
   if (len >= 128) {
     // Adapted from WUFFs code.
-    auto x0 = _mm_loadu_si128((__m128i *)(buf + n + 0x00));
-    auto x1 = _mm_loadu_si128((__m128i *)(buf + n + 0x10));
-    auto x2 = _mm_loadu_si128((__m128i *)(buf + n + 0x20));
-    auto x3 = _mm_loadu_si128((__m128i *)(buf + n + 0x30));
+    auto x0 = Load(buf + n + 0x00);
+    auto x1 = Load(buf + n + 0x10);
+    auto x2 = Load(buf + n + 0x20);
+    auto x3 = Load(buf + n + 0x30);
 
     x0 = _mm_xor_si128(x0, _mm_cvtsi32_si128(crc));
     n += 64;
 
-    auto k = _mm_loadu_si128((__m128i *)k1k2);
+    auto k = Load(k1k2);
     while (n + 64 <= len) {
       auto y0 = _mm_clmulepi64_si128(x0, k, 0x00);
       auto y1 = _mm_clmulepi64_si128(x1, k, 0x00);
@@ -215,18 +221,14 @@ unsigned long update_crc(unsigned long crc, unsigned char *buf, int len) {
       x2 = _mm_clmulepi64_si128(x2, k, 0x11);
       x3 = _mm_clmulepi64_si128(x3, k, 0x11);
 
-      x0 = _mm_xor_si128(_mm_xor_si128(x0, y0),
-                         _mm_loadu_si128((__m128i *)(buf + n + 0x00)));
-      x1 = _mm_xor_si128(_mm_xor_si128(x1, y1),
-                         _mm_loadu_si128((__m128i *)(buf + n + 0x10)));
-      x2 = _mm_xor_si128(_mm_xor_si128(x2, y2),
-                         _mm_loadu_si128((__m128i *)(buf + n + 0x20)));
-      x3 = _mm_xor_si128(_mm_xor_si128(x3, y3),
-                         _mm_loadu_si128((__m128i *)(buf + n + 0x30)));
+      x0 = _mm_xor_si128(_mm_xor_si128(x0, y0), Load(buf + n + 0x00));
+      x1 = _mm_xor_si128(_mm_xor_si128(x1, y1), Load(buf + n + 0x10));
+      x2 = _mm_xor_si128(_mm_xor_si128(x2, y2), Load(buf + n + 0x20));
+      x3 = _mm_xor_si128(_mm_xor_si128(x3, y3), Load(buf + n + 0x30));
       n += 64;
     }
 
-    k = _mm_loadu_si128((__m128i *)k3k4);
+    k = Load(k3k4);
     auto y0 = _mm_clmulepi64_si128(x0, k, 0x00);
     x0 = _mm_clmulepi64_si128(x0, k, 0x11);
     x0 = _mm_xor_si128(x0, x1);
@@ -245,13 +247,13 @@ unsigned long update_crc(unsigned long crc, unsigned char *buf, int len) {
     x0 = _mm_srli_si128(x0, 8);
     x0 = _mm_xor_si128(x0, x1);
 
-    k = _mm_loadu_si128((__m128i *)k5k6);
+    k = Load(k5k6);
     x1 = _mm_srli_si128(x0, 4);
     x0 = _mm_and_si128(x0, x2);
     x0 = _mm_clmulepi64_si128(x0, k, 0x00);
     x0 = _mm_xor_si128(x0, x1);
 
-    k = _mm_loadu_si128((__m128i *)poly);
+    k = Load(poly);
     x1 = _mm_and_si128(x0, x2);
     x1 = _mm_clmulepi64_si128(x1, k, 0x10);
     x1 = _mm_and_si128(x1, x2);
@@ -269,11 +271,11 @@ unsigned long update_crc(unsigned long crc, unsigned char *buf, int len) {
   return c;
 }
 
-unsigned long compute_crc(unsigned char *buf, int len) {
+uint32_t compute_crc(uint8_t *buf, int len) {
   return update_crc(0xffffffffL, buf, len) ^ 0xffffffffL;
 }
 
-constexpr unsigned kAdler32Mod = 65521;
+constexpr uint32_t kAdler32Mod = 65521u;
 
 void UpdateAdler32(uint32_t &s1, uint32_t &s2, uint8_t byte) {
   s1 += byte;
@@ -297,9 +299,9 @@ uint32_t hadd(__m256 v) {
 
 template <size_t predictor, typename CB, typename CB_ADL, typename CB_RLE>
 __attribute__((always_inline)) void
-ProcessRow(size_t bytes_per_line_buf, const unsigned char *mask,
-           unsigned char *current_row_buf, const unsigned char *top_buf,
-           const unsigned char *left_buf, const unsigned char *topleft_buf,
+ProcessRow(size_t bytes_per_line_buf, const uint8_t *mask,
+           uint8_t *current_row_buf, const uint8_t *top_buf,
+           const uint8_t *left_buf, const uint8_t *topleft_buf,
            CB &&cb, CB_ADL &&cb_adl, CB_RLE &&cb_rle) {
   alignas(32) uint8_t last_predicted_data[32] = {};
   size_t run = 0;
@@ -432,10 +434,10 @@ template <typename CB> void ForAllRLESymbols(size_t length, CB &&cb) {
 }
 
 template <size_t pred>
-void TryPredictor(size_t bytes_per_line_buf, const unsigned char *mask,
-                  unsigned char *current_row_buf, const unsigned char *top_buf,
-                  const unsigned char *left_buf,
-                  const unsigned char *topleft_buf, size_t &best_cost,
+void TryPredictor(size_t bytes_per_line_buf, const uint8_t *mask,
+                  uint8_t *current_row_buf, const uint8_t *top_buf,
+                  const uint8_t *left_buf,
+                  const uint8_t *topleft_buf, size_t &best_cost,
                   uint8_t &predictor, size_t dist_nbits) {
   size_t cost_rle = 0;
   __m256i cost_direct = _mm256_setzero_si256();
@@ -570,14 +572,64 @@ WriteBits(__m256i nbits, __m256i bits_lo, __m256i bits_hi, BitWriter *writer) {
   writer->bytes_written = bytes_written;
 }
 
+#if defined(USE_PREDICTOR_HEURISTIC)
+#define SMAX 16
+#define SDIFF(a, b) (abs((a) - (b)) >> 4)   // Scoring diff, in [0..SMAX)
+
+static int GradientPredictor(uint8_t a, uint8_t b, uint8_t c) {
+  const int g = a + b - c;
+  return ((g & ~0xff) == 0) ? g : (g < 0) ? 0 : 255;  // clip to 8bit
+}
+
+uint8_t GuessBestPredictor(size_t size, const uint8_t *buf,
+                           const uint8_t *top_buf,
+                           const uint8_t *left_buf,
+                           const uint8_t *top_left_buf) {
+  int bins[5][SMAX] = { { 0 } };
+
+  // We only sample every other pixels. That's enough.
+  int mean = buf[0];
+  for (int i = 2; i + 1 < size; i += 2) {
+    const int diff0 = SDIFF(buf[i], mean);
+    const int diff1 = SDIFF(buf[i], left_buf[i]);
+    const int diff2 = SDIFF(buf[i], top_buf[i]);
+    const int mid_pred = (left_buf[i] + top_buf[i]) / 2;
+    const int grad_pred =
+          GradientPredictor(left_buf[i], top_buf[i], top_left_buf[i]);
+    const int diff3 = SDIFF(buf[i], mid_pred);
+    const int diff4 = SDIFF(buf[i], grad_pred);
+    bins[0][diff0] = 1;
+    bins[1][diff1] = 1;
+    bins[2][diff2] = 1;
+    bins[3][diff4] = 1;
+    bins[4][diff3] = 1;
+    mean = (3 * mean + buf[i] + 2) >> 2;
+  }
+  int filter;
+  int best_filter = 0;
+  uint32_t best_score = ~0U;
+  for (filter = 1; filter < 4; ++filter) {
+    int score = 0;
+    for (int i = 0; i < SMAX; ++i) {
+      if (bins[filter][i] > 0) score += i;
+    }
+    if (score < best_score) {
+      best_score = score;
+      best_filter = filter;
+    }
+  }
+  return best_filter;
+}
+#endif
+
 void EncodeOneRow(size_t bytes_per_line_buf,
                   const uint8_t *aligned_adler_mul_buf_ptr,
-                  const unsigned char *mask, unsigned char *current_row_buf,
-                  const unsigned char *top_buf, const unsigned char *left_buf,
-                  const unsigned char *topleft_buf, uint32_t &s1, uint32_t &s2,
+                  const uint8_t *mask, uint8_t *current_row_buf,
+                  const uint8_t *top_buf, const uint8_t *left_buf,
+                  const uint8_t *topleft_buf, uint32_t &s1, uint32_t &s2,
                   size_t dist_nbits, size_t dist_bits, BitWriter *writer) {
-#ifndef FPNGE_FIXED_PREDICTOR
   uint8_t predictor;
+#if 0 // ifndef FPNGE_FIXED_PREDICTOR
   size_t best_cost = ~0U;
   TryPredictor<1>(bytes_per_line_buf, mask, current_row_buf, top_buf, left_buf,
                   topleft_buf, best_cost, predictor, dist_nbits);
@@ -587,8 +639,10 @@ void EncodeOneRow(size_t bytes_per_line_buf,
                   topleft_buf, best_cost, predictor, dist_nbits);
   TryPredictor<4>(bytes_per_line_buf, mask, current_row_buf, top_buf, left_buf,
                   topleft_buf, best_cost, predictor, dist_nbits);
+#elif defined(USE_PREDICTOR_HEURISTIC)
+  predictor = GuessBestPredictor(bytes_per_line_buf, current_row_buf, top_buf, left_buf, topleft_buf);
 #else
-  uint8_t predictor = FPNGE_FIXED_PREDICTOR;
+  predictor = FPNGE_FIXED_PREDICTOR;
 #endif
 
   writer->Write(kFirst16Nbits[predictor], kFirst16Bits[predictor]);
@@ -759,8 +813,8 @@ void WriteHeader(size_t width, size_t height, size_t bytes_per_channel,
 }
 
 size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
-                   const unsigned char *data, size_t width, size_t row_stride,
-                   size_t height, unsigned char **output) {
+                   const uint8_t *data, size_t width, size_t row_stride,
+                   size_t height, uint8_t **output) {
   assert(bytes_per_channel == 1 || bytes_per_channel == 2);
   assert(num_channels != 0 && num_channels <= 4);
   size_t bytes_per_line = bytes_per_channel * num_channels * width;
@@ -772,21 +826,21 @@ size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
       (bytes_per_channel * 4 * width + 4 * bytes_per_channel + 31) / 32 * 32;
 
   // Extra space for alignment purposes.
-  std::vector<unsigned char> buf(bytes_per_line_buf * 2 + 31 +
+  std::vector<uint8_t> buf(bytes_per_line_buf * 2 + 31 +
                                  4 * bytes_per_channel);
-  unsigned char *aligned_buf_ptr = buf.data() + 4 * bytes_per_channel;
+  uint8_t *aligned_buf_ptr = buf.data() + 4 * bytes_per_channel;
   aligned_buf_ptr += (intptr_t)aligned_buf_ptr % 32
                          ? (32 - (intptr_t)aligned_buf_ptr % 32)
                          : 0;
 
-  std::vector<unsigned char> mask_buf(bytes_per_line_buf + 31);
-  unsigned char *aligned_mask_buf_ptr = mask_buf.data();
+  std::vector<uint8_t> mask_buf(bytes_per_line_buf + 31);
+  uint8_t *aligned_mask_buf_ptr = mask_buf.data();
   aligned_mask_buf_ptr += (intptr_t)aligned_mask_buf_ptr % 32
                               ? (32 - (intptr_t)aligned_mask_buf_ptr % 32)
                               : 0;
 
-  std::vector<unsigned char> adler_mul_buf(bytes_per_line_buf + 31);
-  unsigned char *aligned_adler_mul_buf_ptr = adler_mul_buf.data();
+  std::vector<uint8_t> adler_mul_buf(bytes_per_line_buf + 31);
+  uint8_t *aligned_adler_mul_buf_ptr = adler_mul_buf.data();
   aligned_adler_mul_buf_ptr +=
       (intptr_t)aligned_adler_mul_buf_ptr % 32
           ? (32 - (intptr_t)aligned_adler_mul_buf_ptr % 32)
@@ -830,7 +884,7 @@ size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
   }
 
   // likely an overestimate
-  *output = (unsigned char *)malloc(1024 + 2 * bytes_per_line * height);
+  *output = (uint8_t *)malloc(1024 + 2 * bytes_per_line * height);
 
   BitWriter writer;
   writer.data = *output;
@@ -856,13 +910,13 @@ size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
   uint32_t s1 = 1;
   uint32_t s2 = 0;
   for (size_t y = 0; y < height; y++) {
-    const unsigned char *current_row_in = data + row_stride * y;
-    unsigned char *current_row_buf =
+    const uint8_t *current_row_in = data + row_stride * y;
+    uint8_t *current_row_buf =
         aligned_buf_ptr + (y % 2 ? bytes_per_line_buf : 0);
-    const unsigned char *top_buf =
+    const uint8_t *top_buf =
         aligned_buf_ptr + ((y + 1) % 2 ? bytes_per_line_buf : 0);
-    const unsigned char *left_buf = current_row_buf - bytes_per_channel * 4;
-    const unsigned char *topleft_buf = top_buf - bytes_per_channel * 4;
+    const uint8_t *left_buf = current_row_buf - bytes_per_channel * 4;
+    const uint8_t *topleft_buf = top_buf - bytes_per_channel * 4;
 
     if (bytes_per_channel == 1 && num_channels == 3) {
       for (size_t i = 0; i < width; i++) {
